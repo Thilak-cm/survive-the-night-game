@@ -9,6 +9,14 @@ import { NameChangePanel } from "./play/-components/NameChangePanel";
 import { CharacterColorPanel } from "./play/-components/CharacterColorPanel";
 import { Button } from "~/components/ui/button";
 import {
+  DEFAULT_RUNTIME_KEYBINDINGS,
+  type RuntimeKeybindings,
+  RUNTIME_KEYBINDINGS_UPDATED_EVENT,
+  formatBindingForDisplay,
+  loadRuntimeKeybindings,
+  matchesBinding,
+} from "@shared/util/runtime-keybindings";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -52,6 +60,9 @@ function GameClientLoader() {
   const [savedDisplayName, setSavedDisplayName] = useState<string>("");
   const [currentPlayerName, setCurrentPlayerName] = useState<string>("");
   const [currentPlayerColor, setCurrentPlayerColor] = useState<string>("none");
+  const [runtimeKeybindings, setRuntimeKeybindings] = useState<RuntimeKeybindings>(
+    DEFAULT_RUNTIME_KEYBINDINGS
+  );
 
   const handleLeaveGame = () => {
     // Clean up game client before leaving
@@ -75,6 +86,7 @@ function GameClientLoader() {
       if (savedColor) {
         setCurrentPlayerColor(savedColor);
       }
+      setRuntimeKeybindings(loadRuntimeKeybindings());
 
       // Fetch game auth token for WebSocket authentication
       getGameAuthToken().then(({ token, displayName }) => {
@@ -86,6 +98,17 @@ function GameClientLoader() {
         }
       });
     }
+  }, []);
+
+  useEffect(() => {
+    const syncBindings = () => {
+      setRuntimeKeybindings(loadRuntimeKeybindings());
+    };
+
+    window.addEventListener(RUNTIME_KEYBINDINGS_UPDATED_EVENT, syncBindings as EventListener);
+    return () => {
+      window.removeEventListener(RUNTIME_KEYBINDINGS_UPDATED_EVENT, syncBindings as EventListener);
+    };
   }, []);
 
   // Poll for game client once scene manager is loaded
@@ -154,15 +177,15 @@ function GameClientLoader() {
         return;
       }
 
-      // Don't toggle instructions if user is typing username
-      if (gameClient && (e.key === "i" || e.key === "I")) {
+      if (gameClient && matchesBinding(e, runtimeKeybindings.controlsPanel)) {
+        e.preventDefault();
         setShowInstructions((prev) => !prev);
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [gameClient, showNameChangePanel]);
+  }, [gameClient, runtimeKeybindings.controlsPanel, showNameChangePanel]);
 
   // Handle ESC key to close any open panels (but not toggle)
   useEffect(() => {
@@ -342,7 +365,7 @@ function GameClientLoader() {
           size="icon"
           onClick={() => setShowInstructions((prev) => !prev)}
           className="bg-gray-800 text-white hover:bg-gray-700"
-          title="Game Controls (I)"
+          title={`Game Controls (${formatBindingForDisplay(runtimeKeybindings.controlsPanel)})`}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"

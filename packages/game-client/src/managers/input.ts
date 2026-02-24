@@ -10,6 +10,12 @@ import { getConfig } from "@shared/config";
 import { itemRegistry } from "../../../game-shared/src/entities/item-registry";
 import { isWeapon } from "@shared/util/inventory";
 import { distance } from "@shared/util/physics";
+import {
+  type RuntimeKeybindings,
+  RUNTIME_KEYBINDINGS_UPDATED_EVENT,
+  loadRuntimeKeybindings,
+  matchesBinding,
+} from "@shared/util/runtime-keybindings";
 
 export interface InputManagerOptions {
   onCraft?: () => unknown;
@@ -97,11 +103,24 @@ export class InputManager {
   private mousePosition: Vector2 | null = null;
   private canvas: HTMLCanvasElement | null = null;
   private fKeyHeld = false;
+  private runtimeKeybindings: RuntimeKeybindings = loadRuntimeKeybindings();
 
   // Store bound event handlers for cleanup
   private boundKeydownHandler: ((e: KeyboardEvent) => void) | null = null;
   private boundKeyupHandler: ((e: KeyboardEvent) => void) | null = null;
   private boundFocusHandler: (() => void) | null = null;
+  private boundRuntimeKeybindingsUpdatedHandler: (() => void) | null = null;
+
+  private refreshRuntimeKeybindings() {
+    this.runtimeKeybindings = loadRuntimeKeybindings();
+  }
+
+  private matchesRuntimeBinding(
+    e: KeyboardEvent,
+    actionId: keyof RuntimeKeybindings
+  ): boolean {
+    return matchesBinding(e, this.runtimeKeybindings[actionId]);
+  }
 
   private checkIfChanged() {
     this.hasChanged = JSON.stringify(this.inputs) !== JSON.stringify(this.lastInputs);
@@ -132,37 +151,45 @@ export class InputManager {
     if (shouldBlock.has(e.code)) {
       e.preventDefault();
       e.stopPropagation();
+      return;
+    }
+
+    for (const binding of Object.values(this.runtimeKeybindings)) {
+      if (matchesBinding(e, binding)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
     }
   }
 
   constructor(callbacks: InputManagerOptions = {}) {
     this.callbacks = callbacks;
+    this.refreshRuntimeKeybindings();
+
+    this.boundRuntimeKeybindingsUpdatedHandler = () => {
+      this.refreshRuntimeKeybindings();
+    };
+    window.addEventListener(
+      RUNTIME_KEYBINDINGS_UPDATED_EVENT,
+      this.boundRuntimeKeybindingsUpdatedHandler as EventListener
+    );
 
     // Create and store bound handlers for cleanup
     this.boundKeydownHandler = (e: KeyboardEvent) => {
-      this.blockBrowserKeys(e);
       // Ignore inputs when user is typing in a form element
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
         return;
       }
+      this.blockBrowserKeys(e);
 
       const eventCode = e.code;
       const eventKey = e.key.toLowerCase();
 
-      // Track F key state for weapons HUD
-      if (eventCode === "KeyF") {
+      // Track weapons HUD hold state using the current binding
+      if (this.matchesRuntimeBinding(e, "weaponsHud")) {
         this.fKeyHeld = true;
-      }
-
-      // Handle chat mode FIRST - block ALL game inputs when chatting
-      // This must come before any other input handling to prevent hotkeys from triggering
-      if (eventKey === "y" && !this.isChatting) {
-        this.isChatting = true;
-        // Clear all inputs when entering chat mode
-        this.clearInputs();
-        callbacks.onToggleChat?.();
-        return;
       }
 
       // If chatting, block ALL inputs except chat-specific keys
@@ -189,6 +216,14 @@ export class InputManager {
         return; // Block all other inputs when chatting
       }
 
+      // Enter chat mode using the current binding.
+      if (this.matchesRuntimeBinding(e, "chat")) {
+        this.isChatting = true;
+        this.clearInputs();
+        callbacks.onToggleChat?.();
+        return;
+      }
+
       // Check if fullscreen map is open
       const isFullscreenMapOpen = callbacks.isFullscreenMapOpen?.() ?? false;
 
@@ -209,118 +244,104 @@ export class InputManager {
         return; // Block all other inputs when map is open
       }
 
-      // Handle merchant panel inputs - only allow Escape and E to close
+      // Handle merchant panel inputs - only allow Escape and Interact to close
       if (isMerchantPanelOpen) {
-        // Only allow Escape or E keys to close the menu
-        if (eventCode === "Escape" || eventCode === "KeyE") {
+        if (eventCode === "Escape" || this.matchesRuntimeBinding(e, "interact")) {
           if (callbacks.onMerchantKeyDown) {
-            // Convert event code to a format the panel understands
             const key = eventCode === "Escape" ? "Escape" : "e";
             callbacks.onMerchantKeyDown(key);
           }
         }
-        // Block all other inputs when merchant panel is open
         return;
       }
 
-      // Normal game input handling - use physical key codes for WASD
-      switch (eventCode) {
-        case "KeyH":
-          this.quickHeal();
-          break;
-        case "KeyC": {
-          // Only start teleport if player is alive and no panels are open
-          if (this.isChatting) break;
+      let handledRebindable = false;
 
-          const isPlayerDead = this.callbacks.isPlayerDead?.() ?? false;
-          const isMerchantPanelOpen = this.callbacks.isMerchantPanelOpen?.() ?? false;
-          const isFullscreenMapOpen = this.callbacks.isFullscreenMapOpen?.() ?? false;
+      if (this.matchesRuntimeBinding(e, "quickHeal")) {
+        this.quickHeal();
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "teleportToBase")) {
+        const playerDead = this.callbacks.isPlayerDead?.() ?? false;
+        const merchantOpen = this.callbacks.isMerchantPanelOpen?.() ?? false;
+        const fullscreenOpen = this.callbacks.isFullscreenMapOpen?.() ?? false;
 
-          if (!isPlayerDead && !isMerchantPanelOpen && !isFullscreenMapOpen) {
-            this.callbacks.onTeleportStart?.();
-          }
-          break;
+        if (!playerDead && !merchantOpen && !fullscreenOpen) {
+          this.callbacks.onTeleportStart?.();
         }
-        case "KeyW":
-          callbacks.onUp?.(this.inputs);
-          break;
-        case "KeyS":
-          callbacks.onDown?.(this.inputs);
-          break;
-        case "KeyA":
-          callbacks.onLeft?.(this.inputs);
-          break;
-        case "KeyD":
-          callbacks.onRight?.(this.inputs);
-          break;
-        case "ArrowUp":
-          callbacks.onUp?.(this.inputs);
-          break;
-        case "ArrowDown":
-          callbacks.onDown?.(this.inputs);
-          break;
-        case "ArrowLeft":
-          callbacks.onLeft?.(this.inputs);
-          break;
-        case "ArrowRight":
-          callbacks.onRight?.(this.inputs);
-          break;
-        case "KeyE":
-          callbacks.onInteractStart?.();
-          break;
-        case "KeyQ": {
-          // Quick switch to previous weapon
-          this.quickSwitchWeapon();
-          break;
-        }
-        case "KeyG": {
-          // Drop currently selected item
-          const currentSlot = this.currentInventorySlot - 1; // Convert to 0-indexed
-          callbacks.onDropItem?.(currentSlot);
-          break;
-        }
-        case "KeyX": {
-          // Split half of the currently selected stack (if stackable)
-          const splitSlot = this.currentInventorySlot - 1; // Convert to 0-indexed
-          if (splitSlot < 0) break;
-
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "moveUp")) {
+        callbacks.onUp?.(this.inputs);
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "moveDown")) {
+        callbacks.onDown?.(this.inputs);
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "moveLeft")) {
+        callbacks.onLeft?.(this.inputs);
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "moveRight")) {
+        callbacks.onRight?.(this.inputs);
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "interact")) {
+        callbacks.onInteractStart?.();
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "quickSwitchWeapon")) {
+        this.quickSwitchWeapon();
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "dropItem")) {
+        const currentSlot = this.currentInventorySlot - 1;
+        callbacks.onDropItem?.(currentSlot);
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "splitDropItem")) {
+        const splitSlot = this.currentInventorySlot - 1;
+        if (splitSlot >= 0) {
           const inventory = callbacks.getInventory?.();
-          if (!inventory) break;
-
-          const item = inventory[splitSlot];
-          if (!item) break;
-
-          const count = item.state?.count ?? 1;
-          if (count <= 1) break;
-
-          const dropAmount = Math.floor(count / 2);
-          if (dropAmount <= 0) break;
-
-          callbacks.onDropItem?.(splitSlot, dropAmount);
-          break;
+          const item = inventory?.[splitSlot];
+          const count = item?.state?.count ?? 1;
+          if (count > 1) {
+            const dropAmount = Math.floor(count / 2);
+            if (dropAmount > 0) {
+              callbacks.onDropItem?.(splitSlot, dropAmount);
+            }
+          }
         }
-        case "Space":
-          // Trigger attack with spacebar
-          e.preventDefault(); // Prevent page scrolling
-          this.triggerFire();
-          break;
-        case "ShiftLeft":
-        case "ShiftRight":
-          this.inputs.sprint = true;
-          break;
-        case "KeyI":
-          callbacks.onToggleInstructions?.();
-          break;
-        case "KeyN":
-          callbacks.onToggleMute?.();
-          break;
-        case "Tab":
-          e.preventDefault(); // Prevent tab from changing focus
-          callbacks.onShowPlayerList?.();
-          break;
-        case "Escape":
-          callbacks.onEscape?.();
-          break;
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "sprint")) {
+        this.inputs.sprint = true;
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "controlsPanel")) {
+        callbacks.onToggleInstructions?.();
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "playerList")) {
+        e.preventDefault();
+        callbacks.onShowPlayerList?.();
+        handledRebindable = true;
+      }
+
+      if (!handledRebindable) {
+        switch (eventCode) {
+          case "ArrowUp":
+            callbacks.onUp?.(this.inputs);
+            break;
+          case "ArrowDown":
+            callbacks.onDown?.(this.inputs);
+            break;
+          case "ArrowLeft":
+            callbacks.onLeft?.(this.inputs);
+            break;
+          case "ArrowRight":
+            callbacks.onRight?.(this.inputs);
+            break;
+          case "Space":
+            e.preventDefault();
+            this.triggerFire();
+            break;
+          case "KeyN":
+            callbacks.onToggleMute?.();
+            break;
+          case "Escape":
+            callbacks.onEscape?.();
+            break;
+        }
       }
 
       this.checkIfChanged();
@@ -336,8 +357,8 @@ export class InputManager {
       const eventCode = e.code;
       const eventKey = e.key.toLowerCase();
 
-      // Track F key state for weapons HUD
-      if (eventCode === "KeyF") {
+      // Track weapons HUD hold state using the current binding
+      if (this.matchesRuntimeBinding(e, "weaponsHud")) {
         this.fKeyHeld = false;
       }
 
@@ -376,50 +397,53 @@ export class InputManager {
         }
       }
 
-      // Use physical key codes for WASD and other action keys
-      switch (eventCode) {
-        case "KeyC":
-          this.callbacks.onTeleportCancel?.();
-          break;
-        case "KeyW":
-          this.inputs.dy = this.inputs.dy === -1 ? 0 : this.inputs.dy;
-          break;
-        case "KeyS":
-          this.inputs.dy = this.inputs.dy === 1 ? 0 : this.inputs.dy;
-          break;
-        case "KeyA":
-          this.inputs.dx = this.inputs.dx === -1 ? 0 : this.inputs.dx;
-          break;
-        case "KeyD":
-          this.inputs.dx = this.inputs.dx === 1 ? 0 : this.inputs.dx;
-          break;
-        case "ArrowUp":
-          this.inputs.dy = this.inputs.dy === -1 ? 0 : this.inputs.dy;
-          break;
-        case "ArrowDown":
-          this.inputs.dy = this.inputs.dy === 1 ? 0 : this.inputs.dy;
-          break;
-        case "ArrowLeft":
-          this.inputs.dx = this.inputs.dx === -1 ? 0 : this.inputs.dx;
-          break;
-        case "ArrowRight":
-          this.inputs.dx = this.inputs.dx === 1 ? 0 : this.inputs.dx;
-          break;
-        case "KeyE":
-          callbacks.onInteractEnd?.();
-          break;
-        case "Space":
-          // Release attack with spacebar
-          this.releaseFire();
-          break;
-        case "ShiftLeft":
-        case "ShiftRight":
-          this.inputs.sprint = false;
-          break;
-        case "Tab":
-          e.preventDefault(); // Prevent tab from changing focus
-          callbacks.onHidePlayerList?.();
-          break;
+      let handledRebindable = false;
+
+      if (this.matchesRuntimeBinding(e, "teleportToBase")) {
+        this.callbacks.onTeleportCancel?.();
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "moveUp")) {
+        this.inputs.dy = this.inputs.dy === -1 ? 0 : this.inputs.dy;
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "moveDown")) {
+        this.inputs.dy = this.inputs.dy === 1 ? 0 : this.inputs.dy;
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "moveLeft")) {
+        this.inputs.dx = this.inputs.dx === -1 ? 0 : this.inputs.dx;
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "moveRight")) {
+        this.inputs.dx = this.inputs.dx === 1 ? 0 : this.inputs.dx;
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "interact")) {
+        callbacks.onInteractEnd?.();
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "sprint")) {
+        this.inputs.sprint = false;
+        handledRebindable = true;
+      } else if (this.matchesRuntimeBinding(e, "playerList")) {
+        e.preventDefault();
+        callbacks.onHidePlayerList?.();
+        handledRebindable = true;
+      }
+
+      if (!handledRebindable) {
+        switch (eventCode) {
+          case "ArrowUp":
+            this.inputs.dy = this.inputs.dy === -1 ? 0 : this.inputs.dy;
+            break;
+          case "ArrowDown":
+            this.inputs.dy = this.inputs.dy === 1 ? 0 : this.inputs.dy;
+            break;
+          case "ArrowLeft":
+            this.inputs.dx = this.inputs.dx === -1 ? 0 : this.inputs.dx;
+            break;
+          case "ArrowRight":
+            this.inputs.dx = this.inputs.dx === 1 ? 0 : this.inputs.dx;
+            break;
+          case "Space":
+            this.releaseFire();
+            break;
+        }
       }
 
       this.checkIfChanged();
@@ -798,6 +822,13 @@ export class InputManager {
    * Should be called when the game client is unmounted
    */
   cleanup(): void {
+    if (this.boundRuntimeKeybindingsUpdatedHandler) {
+      window.removeEventListener(
+        RUNTIME_KEYBINDINGS_UPDATED_EVENT,
+        this.boundRuntimeKeybindingsUpdatedHandler as EventListener
+      );
+      this.boundRuntimeKeybindingsUpdatedHandler = null;
+    }
     if (this.boundKeydownHandler) {
       window.removeEventListener("keydown", this.boundKeydownHandler);
       this.boundKeydownHandler = null;
