@@ -105,7 +105,7 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof SignInRoute
   '/sign-up': typeof SignUpRoute
   '/terms': typeof TermsRoute
-  '/editor': typeof EditorIndexRoute
+  '/editor/': typeof EditorIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/game/player-stats': typeof ApiGamePlayerStatsRoute
   '/api/game/zombie-kill': typeof ApiGameZombieKillRoute
@@ -156,7 +156,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/terms'
-    | '/editor'
+    | '/editor/'
     | '/api/auth/$'
     | '/api/game/player-stats'
     | '/api/game/zombie-kill'
@@ -280,7 +280,7 @@ declare module '@tanstack/react-router' {
     '/editor/': {
       id: '/editor/'
       path: '/editor'
-      fullPath: '/editor'
+      fullPath: '/editor/'
       preLoaderRoute: typeof EditorIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
